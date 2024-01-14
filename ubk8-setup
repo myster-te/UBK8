@@ -1,0 +1,129 @@
+Ubuntu 22.04 K8 Install
+UBK8M0
+
+
+ALL SYSTEM PREP
+===================================================================================
+#!/bin/bash
+#
+# Common setup for all servers (Control Plane and Nodes)
+
+# disable swap
+sudo swapoff -a
+# keep swap off after reboot
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
+# MORE swap removal for ubuntu
+systemctl mask swap.target
+
+# allow IPtables to access bridged network traffic
+sudo modprobe br_netfilter
+echo br_netfilter | sudo tee /etc/modules-load.d/kubernetes.conf
+
+# set IPv4 forwarding
+echo "1" | sudo tee /proc/sys/net/ipv4/ip_forward
+# set IPv4 forwarding persistent
+echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.conf
+
+cat <<EOF | sudo tee /etc/sysctl.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+
+#base line update and dependencies
+sudo apt update
+
+sudo apt install -y \
+ca-certificates \
+curl \
+gnupg \
+lsb-release \
+ntp
+
+#add a key ring
+sudo mkdir -p /etc/apt/keyrings
+
+#get the Docker key 
+$ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# add docker to our repo list
+ echo \
+ "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+#update with new repos
+sudo apt update
+
+#install containerd
+sudo apt install -y containerd.io
+
+#Configure containerd
+containerd config default | sudo tee /etc/containerd/config.toml
+
+# Open the config file 
+# change SystemdCgroup = false to SystemdCgroup = true
+
+sudo service containerd restart
+
+# add the Kubernetes keyring
+sudo curl -fsSLo /etc/apt/keyrings/kubernetes.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+
+# add the kubernetes repo
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+#update with new repos
+sudo apt update
+
+# install Kubernetes packages
+sudo apt install -y kubeadm=1.26.1-00 kubectl=1.26.1-00 kubelet
+
+# mark the aps so that they aren't automatically upgraded
+sudo apt-mark hold kubeadm kubectl kubelet
+
+#enable auto complete
+source <(kubectl completion bash) # set up autocomplete in bash into the current shell, bash-completion package should be installed first.
+echo "source <(kubectl completion bash)" >> ~/.bashrc # add autocomplete permanently to your bash shell
+
+#kubectl alias with auto complete
+alias k=kubectl
+complete -o default -F __start_kubectl k
+===============================================================================
+
+MASTER NODE START
+#prefered subnet = 172.16.0.0/16
+ 
+sudo kubeadm init --pod-network-cidr=172.16.0.0/16
+
+# set it up so current user can leverage kubeadm
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config 
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+
+# lets set up networking. curl the tigera ( calico ) operator yaml down
+cd /etc/kubernetes/networking
+sudo curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/tigera-operator.yaml -o tigera-operator.yaml
+
+# stand up the Calico Operator
+
+kubectl create -f tigera-operator.yaml
+
+# let's get the Calico CRD's
+sudo curl https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/custom-resources.yaml -o calico.yaml
+
+
+# modify the cidr block to 172.16.0.0/16
+sudo vi calico.yaml
+
+
+# stand up the Calico pods
+kubectl create -f calico.yaml
+
+======================================
+Other General Notes
+removed the cloud-init service
+ sudo touch /etc/cloud/cloud-init.disabled
+ sudo dpkg-reconfigure cloud-init
+ # uncheck everything
+ sudo apt-get purge cloud-init
+ 
